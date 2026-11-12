@@ -1,0 +1,20 @@
+site,type,hospital,lat,lon,role,risk_cost_0_1,risk_data_missing,road_time_source,new_sa2_served,new_population_served
+Reconciliation Park 2,park,Reconciliation Park,-31.5570961,143.3860446,destination,0.0,True,n/a,3,27857
+Duff Street Park,park,Duff Street Park,-31.9848174,141.4681769,take-off vertiport,0.0,True,osrm (cached),1,17662
+open space 2602,park,open space,-34.6450473,143.5686761,destination,0.0,True,osrm (cached),3,13093
+Apex Park 28,park,Apex Park,-34.5033095,144.8500672,destination,0.0,True,osrm (cached),3,13093
+open space 1155,park,open space,-33.4778593,145.5408719,destination,0.0,True,osrm (cached),2,10195
+open space 702,park,open space,-29.9608523,146.8609933,destination,0.0,True,osrm (cached),2,9503
+Cobar District Hospital,helipad,Cobar District Hospital,-31.509026,145.825266,destination,0.722,True,osrm (cached),2,7785
+open space 2367,park,open space,-34.0928478,142.0419984,take-off vertiport,0.0,True,osrm (cached),1,6543
+Collarenabri Swimming Pool,park,Collarenabri Swimming Pool,-29.5420722,148.5804399,destination,0.0,True,osrm (cached),1,5887
+open space 1431,park,open space,-30.0292974,148.1163758,destination,0.0,True,osrm (cached),1,5887
+open space 4845,park,open space,-29.4315268,147.9837625,take-off vertiport,0.0,True,osrm (cached),1,5887
+Lightning Ridge Sports Centre,park,Lightning Ridge Sports Centre,-29.428692,147.9842131,destination,0.0,True,osrm (cached),1,5887
+Denver Park,park,Denver Park,-29.5452673,148.5774707,destination,0.0,True,osrm (cached),1,5887
+Cobar Bowling & Golf Club,park,Cobar Bowling & Golf Club,-31.5060518,145.8349161,take-off vertiport,0.0,True,osrm (cached),1,4169
+Memorial Park 22,park,Memorial Park,-35.3547713,145.7235232,destination,0.0,True,osrm (cached),1,3652
+Digger Park,park,Digger Park,-35.6422581,145.5693893,destination,0.0,True,n/a,1,3652
+open space 737,park,open space,-30.0928428,145.9443835,destination,0.0,True,osrm (cached),1,3616
+Bourke Racecourse,park,Bourke Racecourse,-30.1001542,145.9275492,take-off vertiport,0.0,True,osrm (cached),1,3616
+Maude Recreation Reserve,park,Maude Recreation Reserve,-34.4721374,144.3036123,take-off vertiport,0.0,True,osrm (cached),1,2898
