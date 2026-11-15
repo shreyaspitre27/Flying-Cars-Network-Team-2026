@@ -104,9 +104,9 @@ ALL_HOSP_LAT_COL     = 'latitude'
 ALL_HOSP_LON_COL     = 'longitude'
 
 # A hospital can only become a flight DESTINATION if it has an emergency department.
-ALL_HOSP_EMERGENCY_COL          = None
+ALL_HOSP_EMERGENCY_COL          = 'ED'   # column holding Y/N for emergency department
 EMERGENCY_TRUE_VALUES           = {'yes', 'y', 'true', '1', '1.0'}
-TREAT_ALL_AS_EMERGENCY_CAPABLE  = True
+TREAT_ALL_AS_EMERGENCY_CAPABLE  = False
 
 # --- cost of building new infrastructure ---
 # Added to the objective for every NEW helipad, on top of the usual (1 + lambda*risk) if it is also selected
@@ -336,17 +336,21 @@ def load_hospital_pool():
     dfa[ALL_HOSP_NAME_COL] = dfa[ALL_HOSP_NAME_COL].astype(str).str.strip()
     dfa = dfa.drop_duplicates(subset=[ALL_HOSP_NAME_COL, ALL_HOSP_LAT_COL, ALL_HOSP_LON_COL]).reset_index(drop=True)
 
-    if ALL_HOSP_EMERGENCY_COL:
+    if TREAT_ALL_AS_EMERGENCY_CAPABLE:
+        # every hospital in the file can be a flight destination
+        dest_ok = pd.Series(True, index=dfa.index)
+        print("\n  WARNING: every hospital in the file is treated as emergency-capable (TREAT_ALL_AS_EMERGENCY_CAPABLE).")
+    elif ALL_HOSP_EMERGENCY_COL:
+        # only hospitals marked as having an emergency department (ED = Y) can be a flight destination
         if ALL_HOSP_EMERGENCY_COL not in dfa.columns:
             raise KeyError(f"{path}: emergency column '{ALL_HOSP_EMERGENCY_COL}' not found. Columns: {list(dfa.columns)}")
         dest_ok = dfa[ALL_HOSP_EMERGENCY_COL].astype(str).str.strip().str.lower().isin(EMERGENCY_TRUE_VALUES)
+        print(f"\n  Emergency destinations: {int(dest_ok.sum())} of {len(dfa)} hospitals have '{ALL_HOSP_EMERGENCY_COL}' = Y "
+              f"(the rest can be take-off sites only).")
     else:
-        dest_ok = pd.Series(bool(TREAT_ALL_AS_EMERGENCY_CAPABLE), index=dfa.index)
-        if not TREAT_ALL_AS_EMERGENCY_CAPABLE:
-            print("\n  NOTE: no emergency-department column set -> new helipads can be take-off sites only, "
-                  "not flight destinations (see ALL_HOSP_EMERGENCY_COL).")
-        else:
-            print("\n  WARNING: every hospital in the file is treated as emergency-capable (TREAT_ALL_AS_EMERGENCY_CAPABLE).")
+        dest_ok = pd.Series(False, index=dfa.index)
+        print("\n  NOTE: no emergency-department column set -> new helipads can be take-off sites only, "
+              "not flight destinations (see ALL_HOSP_EMERGENCY_COL).")
 
     # drop hospitals that already are an existing helipad hospital or candidate vertiport
     ex = list(hospital_coords.values()) + list(candidate_coords.values())
@@ -855,52 +859,57 @@ def run_stage2(a, coverable, client=None):
             'new_covered': new_cov, 'new_df': new_df, 'openspace': os_sites & set(built)}
 
 # ─────────────────────────────────────────────────────────────
-# RESULTS
+# SENSITIVITY ANALYSIS - STAGE 1
 # ─────────────────────────────────────────────────────────────
-TOTAL_POP = float(sum(demand_population.values()))
+Run_analysis = False # set to True to run sensitivity analysis
 
-def report_solution(sel, cov, unc, title, list_uncovered=True):
-    print(f"\n{title}")
-    header = f"  {'Site':<55} {'Bushfire':>10} {'Wind':>10} {'Rain':>10} {'Total':>10}"
-    print(header)
-    print('  ' + '-' * (len(header) - 2))
-    total_risk = 0.0
-    for port in sel:
-        bc, wc, rc = risk_parts(port)
-        total_risk += bc + wc + rc
-        print(f"  {port:<55} {bc:>10.3f} {wc:>10.3f} {rc:>10.3f} {bc+wc+rc:>10.3f}")
-    pop_cov = sum(demand_population[j] for j in cov)
-    print(f"\nTotal risk         : {total_risk:.3f}")
-    print(f"Regions covered    : {len(cov)} / {len(demand_coords)}   (population {pop_cov / TOTAL_POP * 100:.1f}%)")
-    if list_uncovered:
-        print("Uncovered regions  :")
-        for reg in unc:
-            print('\t', reg)
+if Run_analysis:
+    time_thresholds  = [30, 45, 60, 75, 90, 105, 120]
+    coverage_targets = [0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
 
-print(f"\nTime threshold  = {TIME_THRESHOLD} min")
-print(f"Vehicle speed   = {UAV_SPEED_KMH} km/h")
-print(f"Coverage target = {COVERAGE_THRESHOLD*100}%")
-print(f"Risk weights    = Bushfire:{WEIGHT_BUSHFIRE} Wind:{WEIGHT_WIND} Rain:{WEIGHT_RAIN} | lambda={RISK_LAMBDA}\n")
+    results = {}
 
-if stage1_met:
-    print(f"Minimum vertiports : {len(selected)}")
-    print("Selected sites:")
-    report_solution(selected, covered, uncovered, "STAGE 1 (existing sites)")
-else:
-    print("INFEASIBLE: the coverage target cannot be met with the existing candidate sites.")
-    print(f"Showing the best achievable instead ({len(coverable)} SA2s).")
-    report_solution(selected, covered, uncovered, "STAGE 1 (existing sites, best achievable)", list_uncovered=False)
-    print(f"Unreachable regions: {len(uncovered)} (listed in stage 2 below if it runs)")
+    for T in time_thresholds:
+        a_temp = build_coverage_matrix(demand_coords, candidate_coords, road_time_lookup, d_ih, UAV_SPEED_KMH, T)
+        for alpha in coverage_targets:
+            s, sel, cov, uncov = run_model(a_temp, demand_coords, candidate_coords, alpha, cost)
+            if s == 'optimal':
+                results[T, alpha] = len(sel)
+            else:
+                results[T, alpha] = None
 
-stage2 = None
-ceiling = len(coverable) / len(demand_coords)
-if RUN_STAGE2:
-    if ceiling < STAGE2_TARGET - 1e-9:
-        stage2 = run_stage2(a, coverable)
-    else:
-        print(f"\nStage 2 not needed: existing sites already reach {ceiling*100:.1f}% "
-              f"(>= STAGE2_TARGET {STAGE2_TARGET*100:.1f}%).")
-        
+    fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+    ax1 = axes[0]
+    for alpha in coverage_targets:
+        y_vals = [results[T, alpha] if results[T, alpha] is not None else np.nan for T in time_thresholds]
+        ax1.plot(time_thresholds, y_vals, marker='o', label=f'{alpha*100:.0f}%')
+        for T, v in zip(time_thresholds, y_vals):
+            if not np.isnan(v):
+                ax1.annotate(str(int(v)), (T, v), textcoords="offset points", xytext=(0, 6), ha='center', fontsize=8)
+    ax1.set_xlabel('Time Threshold (minutes)')
+    ax1.set_ylabel('Minimum Vertiports Required')
+    ax1.set_title('Vertiports vs Time Threshold')
+    ax1.legend(title='Coverage Target')
+    ax1.grid(True, linestyle='--', alpha=0.5)
+
+    ax2 = axes[1]
+    for T in time_thresholds:
+        y_vals = [results[T, alpha] if results[T, alpha] is not None else np.nan for alpha in coverage_targets]
+        ax2.plot([al*100 for al in coverage_targets], y_vals, marker='o', label=f'{T} min')
+        for alpha, v in zip(coverage_targets, y_vals):
+            if not np.isnan(v):
+                ax2.annotate(str(int(v)), (alpha*100, v), textcoords="offset points", xytext=(0, 6), ha='center', fontsize=8)
+    ax2.set_xlabel('Coverage Target (%)')
+    ax2.set_ylabel('Minimum Vertiports Required')
+    ax2.set_title('Vertiports vs Coverage Target')
+    ax2.legend(title='Time Threshold', loc='center left', bbox_to_anchor=(1.02, 0.5))    
+    ax2.grid(True, linestyle='--', alpha=0.5)
+
+    plt.tight_layout()
+    plt.savefig('sensitivity_analysis_combined.png', dpi=150, bbox_inches='tight')
+    plt.show()
+    print("Plot saved to sensitivity_analysis_combined.png")
+
 # ─────────────────────────────────────────────────────────────
 # LAMBDA SENSITIVITY ANALYSIS
 # ─────────────────────────────────────────────────────────────
@@ -1001,58 +1010,184 @@ if lambda_analysis:
 
 
 # ─────────────────────────────────────────────────────────────
-# SENSITIVITY ANALYSIS
+# TWO-STAGE SENSITIVITY ANALYSIS  (combined stage 1 + stage 2)
 # ─────────────────────────────────────────────────────────────
-Run_analysis = False # set to True to run sensitivity analysis
+Run_two_stage_analysis = False  # set True to run
+if Run_two_stage_analysis:
+    import io, contextlib
+    from matplotlib.lines import Line2D
 
-if Run_analysis:
+    achieved_cov = {}   # (T, alpha) -> share of SA2s actually covered when stage 2 could not reach the target
+
+    # Run stage 1 (+ stage 2 if stage 1 cannot meet the target) at time threshold T and coverage alpha
+    def _combined_count(T, alpha):
+        global TIME_THRESHOLD, COVERAGE_THRESHOLD, STAGE2_TARGET
+        T0, C0, S0 = TIME_THRESHOLD, COVERAGE_THRESHOLD, STAGE2_TARGET
+        TIME_THRESHOLD, COVERAGE_THRESHOLD, STAGE2_TARGET = T, alpha, alpha
+        try:
+            a_T = build_coverage_matrix(demand_coords, candidate_coords, road_time_lookup,
+                                        d_ih, UAV_SPEED_KMH, T)
+            cover_T = [j for j in demand_coords if any(a_T[i, j] == 1 for i in candidate_coords)]
+            ceiling = len(cover_T) / len(demand_coords)
+            with contextlib.redirect_stdout(io.StringIO()):          # silence the per-run prints
+                if ceiling >= alpha - 1e-9:                          # stage 1 alone already meets the target
+                    st, sel1, _, _ = run_model(a_T, demand_coords, candidate_coords, alpha, cost)
+                    if st != 'optimal':
+                        return None
+                    return len(sel1), 0, len(sel1)
+                s2 = run_stage2(a_T, cover_T)                        # stage 2 tops up to the target
+            if s2 is None:
+                return None
+            # run_stage2 falls back to the best achievable coverage when the target is out of reach,
+            # so only count these sites if the target was genuinely met
+            n_need = ceil(alpha * len(demand_coords) - 1e-9)
+            achieved_cov[T, alpha] = len(s2['covered']) / len(demand_coords)
+            if len(s2['covered']) < n_need:
+                return None
+            allsites = set(s2['selected']) | set(s2['built'])
+            existing = len([s for s in allsites if s in candidate_coords])
+            new      = len(allsites) - existing
+            return existing, new, existing + new
+        finally:
+            TIME_THRESHOLD, COVERAGE_THRESHOLD, STAGE2_TARGET = T0, C0, S0
+ 
     time_thresholds  = [30, 45, 60, 75, 90, 105, 120]
-    coverage_targets = [0.70, 0.75, 0.80, 0.85, 0.90, 0.95]
-
-    results = {}
-
+    coverage_targets = [0.70, 0.75, 0.80, 0.85, 0.90, 0.95, 1.0]
+ 
+    # --- run every (T, alpha) combination ---
+    results = {}     # (T, alpha) -> (existing, new, total) or None
+    print("\nTwo-stage sensitivity (stage 2 is only used where stage 1 cannot meet the target)")
+    print(f"{'T (min)':>8} {'coverage':>9} {'existing':>9} {'new':>5} {'total':>6}  stage")
+    print("-" * 50)
     for T in time_thresholds:
-        a_temp = build_coverage_matrix(demand_coords, candidate_coords, road_time_lookup, d_ih, UAV_SPEED_KMH, T)
         for alpha in coverage_targets:
-            s, sel, cov, uncov = run_model(a_temp, demand_coords, candidate_coords, alpha, cost)
-            if s == 'optimal':
-                results[T, alpha] = len(sel)
+            r = _combined_count(T, alpha)
+            results[T, alpha] = r
+            if r is None:
+                best = achieved_cov.get((T, alpha))
+                note = f"UNREACHABLE (best possible {best*100:.1f}% of SA2s)" if best is not None else "INFEASIBLE"
+                print(f"{T:>8} {alpha*100:>8.0f}% {note}")
             else:
-                results[T, alpha] = None
+                e, n, tot = r
+                print(f"{T:>8} {alpha*100:>8.0f}% {e:>9} {n:>5} {tot:>6}  {'1 + 2' if n > 0 else '1'}")
+ 
+    # --- save the numbers: existing (stage 1) sites, new (stage 2) sites and total for every combination ---
+    pd.DataFrame([{'time_threshold_min': T, 'coverage_target': alpha,
+                   'existing_sites': None if r is None else r[0],
+                   'new_sites':      None if r is None else r[1],
+                   'total_sites':    None if r is None else r[2],
+                   'stage2_used':    None if r is None else r[1] > 0,
+                   'best_achievable_coverage': achieved_cov.get((T, alpha))}
+                  for (T, alpha), r in results.items()]
+                 ).to_csv('two_stage_sensitivity_results.csv', index=False)
 
+    def _total(T, alpha):
+        r = results[T, alpha]
+        return np.nan if r is None else r[2]
+ 
+    def _uses_stage2(T, alpha):
+        r = results[T, alpha]
+        return r is not None and r[1] > 0
+ 
+    stage2_proxy = Line2D([0], [0], marker='s', color='none', markerfacecolor='lightgrey',
+                          markeredgecolor='black', markersize=8, label='Needs stage 2 (new sites)')
+ 
+    # --- plot (two panels, same layout as the stage-1 sensitivity) ---
     fig, axes = plt.subplots(1, 2, figsize=(16, 6))
+ 
+    # Panel 1: sites vs time threshold, one line per coverage target
     ax1 = axes[0]
     for alpha in coverage_targets:
-        y_vals = [results[T, alpha] if results[T, alpha] is not None else np.nan for T in time_thresholds]
-        ax1.plot(time_thresholds, y_vals, marker='o', label=f'{alpha*100:.0f}%')
+        y_vals = [_total(T, alpha) for T in time_thresholds]
+        line, = ax1.plot(time_thresholds, y_vals, marker='o', label=f'{alpha*100:.0f}%')
         for T, v in zip(time_thresholds, y_vals):
-            if not np.isnan(v):
-                ax1.annotate(str(int(v)), (T, v), textcoords="offset points", xytext=(0, 6), ha='center', fontsize=8)
+            if np.isnan(v):
+                continue
+            if _uses_stage2(T, alpha):
+                ax1.plot(T, v, marker='s', markersize=9, color=line.get_color(),
+                         markeredgecolor='black', linestyle='none')
+            ax1.annotate(str(int(v)), (T, v), textcoords='offset points', xytext=(0, 6), ha='center', fontsize=8)
+    h, l = ax1.get_legend_handles_labels()
+    ax1.legend(handles=h + [stage2_proxy], labels=l + [stage2_proxy.get_label().replace('; ', ';\n')],
+               title='Coverage Target', loc='upper right', fontsize=8, title_fontsize=9)   # empty top-right corner, clear of the data
     ax1.set_xlabel('Time Threshold (minutes)')
-    ax1.set_ylabel('Minimum Vertiports Required')
-    ax1.set_title('Vertiports vs Time Threshold')
-    ax1.legend(title='Coverage Target')
+    ax1.set_ylabel('Total Sites Required (existing + new)')
+    ax1.set_title('Sites vs Time Threshold (two-stage)')
     ax1.grid(True, linestyle='--', alpha=0.5)
-
+ 
+    # Panel 2: sites vs coverage target, one line per time threshold
     ax2 = axes[1]
     for T in time_thresholds:
-        y_vals = [results[T, alpha] if results[T, alpha] is not None else np.nan for alpha in coverage_targets]
-        ax2.plot([al*100 for al in coverage_targets], y_vals, marker='o', label=f'{T} min')
+        y_vals = [_total(T, alpha) for alpha in coverage_targets]
+        line, = ax2.plot([al * 100 for al in coverage_targets], y_vals, marker='o', label=f'{T} min')
         for alpha, v in zip(coverage_targets, y_vals):
-            if not np.isnan(v):
-                ax2.annotate(str(int(v)), (alpha*100, v), textcoords="offset points", xytext=(0, 6), ha='center', fontsize=8)
+            if np.isnan(v):
+                continue
+            if _uses_stage2(T, alpha):
+                ax2.plot(alpha * 100, v, marker='s', markersize=9, color=line.get_color(),
+                         markeredgecolor='black', linestyle='none')
+            ax2.annotate(str(int(v)), (alpha * 100, v), textcoords='offset points', xytext=(0, 6), ha='center', fontsize=8)
+    h, l = ax2.get_legend_handles_labels()
+    ax2.legend(handles=h + [stage2_proxy], labels=l + [stage2_proxy.get_label()],
+               title='Time Threshold', loc='center left', bbox_to_anchor=(1.02, 0.5))
     ax2.set_xlabel('Coverage Target (%)')
-    ax2.set_ylabel('Minimum Vertiports Required')
-    ax2.set_title('Vertiports vs Coverage Target')
-    ax2.legend(title='Time Threshold', loc='center left', bbox_to_anchor=(1.02, 0.5))    
+    ax2.set_ylabel('Total Sites Required (existing + new)')
+    ax2.set_title('Sites vs Coverage Target (two-stage)')
     ax2.grid(True, linestyle='--', alpha=0.5)
-
+ 
     plt.tight_layout()
-    plt.savefig('sensitivity_analysis_combined.png', dpi=150, bbox_inches='tight')
+    plt.savefig('sensitivity_analysis_stage_2.png', dpi=150, bbox_inches='tight')
     plt.show()
-    print("Plot saved to sensitivity_analysis_combined.png")
+    print("Plot saved to sensitivity_analysis_stage_2.png (numbers in two_stage_sensitivity_results.csv)")
 
+# ─────────────────────────────────────────────────────────────
+# RESULTS
+# ─────────────────────────────────────────────────────────────
+TOTAL_POP = float(sum(demand_population.values()))
 
+def report_solution(sel, cov, unc, title, list_uncovered=True):
+    print(f"\n{title}")
+    header = f"  {'Site':<55} {'Bushfire':>10} {'Wind':>10} {'Rain':>10} {'Total':>10}"
+    print(header)
+    print('  ' + '-' * (len(header) - 2))
+    total_risk = 0.0
+    for port in sel:
+        bc, wc, rc = risk_parts(port)
+        total_risk += bc + wc + rc
+        print(f"  {port:<55} {bc:>10.3f} {wc:>10.3f} {rc:>10.3f} {bc+wc+rc:>10.3f}")
+    pop_cov = sum(demand_population[j] for j in cov)
+    print(f"\nTotal risk         : {total_risk:.3f}")
+    print(f"Regions covered    : {len(cov)} / {len(demand_coords)}   (population {pop_cov / TOTAL_POP * 100:.1f}%)")
+    if list_uncovered:
+        print("Uncovered regions  :")
+        for reg in unc:
+            print('\t', reg)
+
+print(f"\nTime threshold  = {TIME_THRESHOLD} min")
+print(f"Vehicle speed   = {UAV_SPEED_KMH} km/h")
+print(f"Coverage target = {COVERAGE_THRESHOLD*100}%")
+print(f"Risk weights    = Bushfire:{WEIGHT_BUSHFIRE} Wind:{WEIGHT_WIND} Rain:{WEIGHT_RAIN} | lambda={RISK_LAMBDA}\n")
+
+if stage1_met:
+    print(f"Minimum vertiports : {len(selected)}")
+    print("Selected sites:")
+    report_solution(selected, covered, uncovered, "STAGE 1 (existing sites)")
+else:
+    print("INFEASIBLE: the coverage target cannot be met with the existing candidate sites.")
+    print(f"Showing the best achievable instead ({len(coverable)} SA2s).")
+    report_solution(selected, covered, uncovered, "STAGE 1 (existing sites, best achievable)", list_uncovered=False)
+    print(f"Unreachable regions: {len(uncovered)} (listed in stage 2 below if it runs)")
+
+stage2 = None
+ceiling = len(coverable) / len(demand_coords)
+if RUN_STAGE2:
+    if ceiling < STAGE2_TARGET - 1e-9:
+        stage2 = run_stage2(a, coverable)
+    else:
+        print(f"\nStage 2 not needed: existing sites already reach {ceiling*100:.1f}% "
+              f"(>= STAGE2_TARGET {STAGE2_TARGET*100:.1f}%).")
+
+        
 # ─────────────────────────────────────────────────────────────
 # MAP
 # ─────────────────────────────────────────────────────────────
@@ -1215,99 +1350,3 @@ if os.path.exists(SA2_SHAPEFILE):
                  openspace_sites=stage2['openspace'])
 else:
     print(f"Map skipped: shapefile '{SA2_SHAPEFILE}' not found.")
-
-
-# ─────────────────────────────────────────────────────────────
-# TWO-STAGE SENSITIVITY ANALYSIS  (combined stage 1 + stage 2)
-# ─────────────────────────────────────────────────────────────
-# Total sites (existing vertiports + new stage-2 pads/helipads) needed to reach the coverage
-# target once open space and hospitals are allowed as new sites, swept over the time threshold
-# and the coverage target. This is the two-stage equivalent of the stage-1 sensitivity analysis.
-#
-# NOTE: each point runs the WHOLE two-stage pipeline (including OSRM lookups), so this is slow.
-# Road times are cached in STAGE2_ROAD_CACHE, so a repeat run of the same sweep is much faster.
-Run_two_stage_analysis = True   # set True to run
-if Run_two_stage_analysis:
-    import io, contextlib
-
-    def _combined_count(T, alpha):
-        """Run stage 1 + stage 2 at time threshold T and coverage target alpha.
-        Returns (existing_sites, new_sites, total_sites), or None if infeasible."""
-        global TIME_THRESHOLD, COVERAGE_THRESHOLD, STAGE2_TARGET
-        T0, C0, S0 = TIME_THRESHOLD, COVERAGE_THRESHOLD, STAGE2_TARGET
-        TIME_THRESHOLD, COVERAGE_THRESHOLD, STAGE2_TARGET = T, alpha, alpha
-        try:
-            a_T = build_coverage_matrix(demand_coords, candidate_coords, road_time_lookup,
-                                        d_ih, UAV_SPEED_KMH, T)
-            cover_T = [j for j in demand_coords if any(a_T[i, j] == 1 for i in candidate_coords)]
-            ceiling = len(cover_T) / len(demand_coords)
-            with contextlib.redirect_stdout(io.StringIO()):          # silence the per-run prints
-                if ceiling >= alpha - 1e-9:                          # stage 1 alone already meets the target
-                    st, sel1, _, _ = run_model(a_T, demand_coords, candidate_coords, alpha, cost)
-                    if st != 'optimal':
-                        return None
-                    return len(sel1), 0, len(sel1)
-                s2 = run_stage2(a_T, cover_T)                        # stage 2 tops up to the target
-            if s2 is None:
-                return None
-            allsites = set(s2['selected']) | set(s2['built'])
-            existing = len([s for s in allsites if s in candidate_coords])
-            new      = len(allsites) - existing
-            return existing, new, existing + new
-        finally:
-            TIME_THRESHOLD, COVERAGE_THRESHOLD, STAGE2_TARGET = T0, C0, S0
-
-    # --- Sweep 1: total sites to reach 100% coverage vs time threshold ---
-    time_thresholds = [30, 45, 60, 75, 90, 105, 120]
-    exist_T, new_T, total_T = [], [], []
-    print("\nTwo-stage sensitivity | coverage target = 100%")
-    print(f"{'T (min)':>8} {'existing':>10} {'new':>6} {'total':>7}")
-    print("-" * 34)
-    for T in time_thresholds:
-        r = _combined_count(T, 1.0)
-        if r is None:
-            exist_T.append(np.nan); new_T.append(np.nan); total_T.append(np.nan)
-            print(f"{T:>8} {'INFEASIBLE':>25}")
-        else:
-            e, n, tot = r
-            exist_T.append(e); new_T.append(n); total_T.append(tot)
-            print(f"{T:>8} {e:>10} {n:>6} {tot:>7}")
-
-    # --- Sweep 2: total sites vs coverage target at a fixed time threshold ---
-    T_FIXED = 90
-    coverage_targets = [0.80, 0.85, 0.90, 0.95, 1.0]
-    total_C = []
-    for alpha in coverage_targets:
-        r = _combined_count(T_FIXED, alpha)
-        total_C.append(np.nan if r is None else r[2])
-
-    # --- plot (two panels, same style as the stage-1 sensitivity) ---
-    fig, axes = plt.subplots(1, 2, figsize=(15, 5.5))
-
-    ax1 = axes[0]
-    ax1.plot(time_thresholds, total_T, 'o-',  color='seagreen',  label='Total sites')
-    ax1.plot(time_thresholds, new_T,   's--', color='firebrick', label='New (stage 2) sites')
-    for T, v in zip(time_thresholds, total_T):
-        if not np.isnan(v):
-            ax1.annotate(str(int(v)), (T, v), textcoords='offset points', xytext=(0, 8), ha='center', fontsize=9)
-    ax1.set_xlabel('Time threshold (minutes)')
-    ax1.set_ylabel('Sites required')
-    ax1.set_title('Two-stage network size vs time threshold (100% coverage)')
-    ax1.grid(True, linestyle='--', alpha=0.4)
-    ax1.legend()
-
-    ax2 = axes[1]
-    ax2.plot([al * 100 for al in coverage_targets], total_C, 'o-', color='steelblue')
-    for al, v in zip(coverage_targets, total_C):
-        if not np.isnan(v):
-            ax2.annotate(str(int(v)), (al * 100, v), textcoords='offset points', xytext=(0, 8), ha='center', fontsize=9)
-    ax2.set_xlabel('Coverage target (%)')
-    ax2.set_ylabel('Total sites required')
-    ax2.set_title(f'Two-stage network size vs coverage target (T={T_FIXED} min)')
-    ax2.grid(True, linestyle='--', alpha=0.4)
-
-    plt.suptitle('Combined two-stage sensitivity', fontsize=12)
-    plt.tight_layout()
-    plt.savefig('two_stage_sensitivity.png', dpi=150, bbox_inches='tight')
-    plt.show()
-    print("Plot saved to two_stage_sensitivity.png")
