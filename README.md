@@ -71,3 +71,95 @@ python parametric_model_two_stage.py    # + new helipads / parks
 - Public OSRM road times are approximate
 - Straight-line flight distances ignore terrain and airspace
 - Open-space sites have no risk data and carry zero risk cost by default
+
+
+## 2. Airport Shuttle Model
+
+An optimization model that decides where to build vertiports so eVTOL air taxis can shuttle NSW residents to **Western Sydney International (WSI) Airport**. It adapts the rural model to an airport-access use case and is based on the **Joby S4** (pilot + 4 passengers, 225 km/h cruise, 246 km range).
+
+## The Problem
+
+Given candidate vertiport sites and NSW suburbs (demand points), choose the **lowest-cost set of sites** so that a target share of the reachable population can get to WSI faster by driving to a vertiport and flying direct to the airport.
+
+A suburb is **covered** by a vertiport if:
+
+> road time (suburb → vertiport) ≤ 30 min
+> flight time (vertiport → WSI, incl. 4 min takeoff/landing) ≤ `T`
+> road time + flight time is at least 10 min faster than driving straight to WSI
+
+Road times come from OpenStreetMaps (OSRM); flight times use haversine distance at 225 km/h. There is no fixed range limit, because `T` sets how far a vertiport can be from WSI (T = 60 min → 210 km, within the S4's 246 km range).
+
+## Changes from the Rural Model
+
+| | Rural model | Airport shuttle model |
+|---|---|---|
+| Demand | SA2 regions | ABS suburbs (2021 Census population) |
+| Destination | Nearest emergency hospital | WSI only |
+| Candidate sites | Existing vertiports and hospitals | Existing helipads/airfields + new-build parks, ovals, car parks and shopping-centre rooftops |
+| Objective | Fewest sites (+ risk) | Lowest total build-cost index |
+| Coverage target | Share of SA2s | Share of people and suburbs, statewide and per SA4 region |
+| Hazards | Bushfire, wind, rain | Not modelled |
+
+## Step 1: Suburb Demand (`prepare_suburb_demand.py`)
+
+Builds the demand points from the ABS suburb (SAL) and SA4 boundaries and the 2021 Census population.
+
+## Step 2: Candidate Sites
+
+| Script | Purpose |
+|---|---|
+| `build_shuttle_vertiports_existing_sites.py` | Existing helipads, heliports, airfields and airports → `vertiport_shuttle_existing_candidates.xlsx` |
+| `make_new_build_candidates.py` | New-build sites (parks, ovals, car parks, shopping-centre rooftops) from NSW Points of Interest → `vertiport_shuttle_new_build_candidates.xlsx` |
+| `build_shuttle_vertiports.py` / `add_osm_parks_ovals.py` | Earlier candidate-building scripts → `vertiport_shuttle_candidates.xlsx` |
+| `plot_all_vertiports.py` | Maps every candidate → `shuttle_vertiports_map.html` |
+
+Each site gets a relative **cost index** by type:
+
+| Site type | Cost index |
+|---|---|
+| Existing helipad, heliport, airfield or airport | 0.5 |
+| Park/oval landing site or NSW POI helipad | 0.6 |
+| New park or oval | 1.0 |
+| New car park | 1.5 |
+| New shopping-centre rooftop | 2.0 |
+
+## Step 3: Optimization Model (`shuttle_optim_model.py`)
+
+A set-covering model with population and regional targets.
+
+- **Variables:** `y[j]` = build vertiport *j*; `z[i]` = suburb *i* covered
+- **Objective:** minimise Σ `cost[j]·y[j]`
+- **Constraints:**
+  - `z[i] ≤ Σ a[i,j]·y[j]`
+  - covered people ≥ 95% of reachable people statewide, and ≥ 80% in each SA4 region
+  - covered suburbs ≥ 80% of populated suburbs statewide, and ≥ 70% in each SA4 region
+- **Defaults:** T = 60 min, Speed = 225 km/h, max drive = 30 min, min time saving = 10 min
+- **Solver:** CBC, 300 s time limit, 0.5% optimality gap
+- **Outputs:** selected sites, suburb and region coverage CSVs, sensitivity plots across T (30/45/60 min) and coverage (70–95%), and an interactive map
+
+## Results (T = 60 min, 95% coverage)
+
+- **69 vertiports** (29 existing, 40 new-build), total cost index 55.1
+- **1,582 suburbs, 6.2 million people** covered: 95% of reachable population, 77% of NSW
+- Median trip to WSI is **41 min by eVTOL vs 101 min by car** (59% faster)
+- The solver stopped at the time limit, within 2% of optimal
+
+## Quick Start
+
+```bash
+pip install pandas numpy pyomo folium geopandas shapely matplotlib requests openpyxl
+# CBC solver must be installed
+python prepare_suburb_demand.py                     # suburb demand
+python build_shuttle_vertiports_existing_sites.py   # existing sites
+python make_new_build_candidates.py                 # new-build sites
+python shuttle_optim_model.py                       # optimisation
+```
+
+**Required data:** the ABS SAL and SA4 shapefiles and the 2021 Census G01 DataPack; `nsw_poi_helipads.csv`; `vertiport_name_with_coord.xlsx`; and the existing and new-build candidate files. Road times are fetched from OSRM on the first run and cached, so later runs are faster.
+
+## Key Limitations
+- Each passenger boards at a single vertiport; rideshare pick-ups across several vertiports are not modelled
+- Luggage weight and the S4's payload limit are not considered
+- Public transport and weather/bushfire hazards are not modelled
+- Road times assume no traffic, and flight range assumes no energy reserve
+- Candidate sites are found by name and not checked for size or planning approval, and cost index values are relative assumptions
